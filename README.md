@@ -6,7 +6,7 @@ stateful simulator/model API for the static web client.
 Build from the repository root:
 
 ```bash
-docker build -f deploy/human-play-api/Dockerfile -t weiss-play-api .
+docker build -t weiss-play-api .
 ```
 
 Run locally with a curated artifact root mounted at `/data/weiss-demo`:
@@ -35,3 +35,41 @@ demo-bundle/
 The image intentionally does not copy local `runs/` by default. Export a small,
 public-safe model bundle from the training repo and mount it into the container
 instead of publishing every experiment artifact.
+
+## OVH/VPS deployment
+
+The repo includes a small Compose stack for a public HTTPS API:
+
+- `api`: builds this Dockerfile and serves the human-play API on port `8765`.
+- `caddy`: terminates HTTPS and proxies to the API container.
+
+Default hostname:
+
+```text
+https://weiss-api.146.59.126.179.sslip.io
+```
+
+`sslip.io` resolves that hostname to the OVH IPv4 address, so no separate DNS
+record is required for the first public smoke deployment.
+
+Server bootstrap sketch:
+
+```bash
+apt-get update
+apt-get install -y ca-certificates curl git
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+. /etc/os-release
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+git clone https://github.com/victorwp288/weiss-human-play-api.git /opt/weiss-human-play-api
+cd /opt/weiss-human-play-api
+mkdir -p demo-bundle
+docker compose up -d --build
+```
+
+After the API is healthy, set the frontend's `VITE_API_BASE` to the HTTPS API
+URL and redeploy the Vercel frontend.

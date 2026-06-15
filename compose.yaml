@@ -1,0 +1,34 @@
+services:
+  api:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      WEISS_CARD_ART_CACHE: /data/card_art
+      WEISS_HUMAN_PLAY_ALLOWED_ORIGINS: ${WEISS_HUMAN_PLAY_ALLOWED_ORIGINS:-https://weiss-human-play.vercel.app,https://weiss-human-play-victor-wejergang-petersens-projects.vercel.app,https://weiss-human-play-git-main-victor-wejergang-petersens-projects.vercel.app}
+      WEISS_HUMAN_PLAY_REPO_ROOT: /data/weiss-demo
+    volumes:
+      - ./demo-bundle:/data/weiss-demo:ro
+      - card_art_cache:/data/card_art
+    expose:
+      - "8765"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      API_HOST: ${API_HOST:-weiss-api.146.59.126.179.sslip.io}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  card_art_cache:
+  caddy_config:
+  caddy_data:
