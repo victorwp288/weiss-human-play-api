@@ -403,7 +403,7 @@ def _config_from_payload(payload: dict[str, Any]) -> HumanPlayConfig:
     if not run_dir:
         raise ValueError("run_dir is required")
     return HumanPlayConfig(
-        run_dir=Path(str(run_dir)),
+        run_dir=_resolve_allowed_run_dir(str(run_dir)),
         policy_id=str(payload.get("policy_id", "main_league_selected")),
         stack_config=_optional_path(payload.get("stack_config")),
         snapshot_registry_json=_optional_path(payload.get("snapshot_registry_json")),
@@ -415,11 +415,31 @@ def _config_from_payload(payload: dict[str, Any]) -> HumanPlayConfig:
         mode=str(payload.get("mode", "study")),
         spectate=bool(payload.get("spectate", False)),
         model_sampling_algorithm=str(payload.get("model_sampling_algorithm", "model_argmax_pinned_v1")),
-        artifact_root=_optional_path(payload.get("artifact_root")),
+        artifact_root=_optional_path(payload.get("artifact_root")) or _default_transcript_root(),
         top_k=int(payload.get("top_k", 5)),
         search_rollout_opponent_policy_id=str(payload.get("search_rollout_opponent_policy_id", "B0 RandomLegal")),
         god_search=GodSearchConfig.from_mapping(_optional_mapping(payload.get("god_search"))),
     )
+
+
+def _default_transcript_root() -> Path | None:
+    """Public deployments mount the model bundle read-only; write transcripts elsewhere."""
+    env_root = os.environ.get("WEISS_HUMAN_PLAY_TRANSCRIPT_ROOT", "").strip()
+    return Path(env_root) if env_root else None
+
+
+def _resolve_allowed_run_dir(run_dir: str) -> Path:
+    """Constrain client-supplied run_dir to the configured catalog root.
+
+    The setup screen always sends a run_dir taken from /api/runs, which the server
+    derives from the catalog root. Rejecting anything outside that root keeps the
+    public API from reading arbitrary server paths.
+    """
+    resolved = Path(run_dir).resolve()
+    root = default_repo_root().resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError("run_dir is outside the configured catalog root")
+    return resolved
 
 
 def _optional_path(value: object) -> Path | None:

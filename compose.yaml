@@ -7,9 +7,11 @@ services:
       WEISS_CARD_ART_CACHE: /data/card_art
       WEISS_HUMAN_PLAY_ALLOWED_ORIGINS: ${WEISS_HUMAN_PLAY_ALLOWED_ORIGINS:-https://weiss-human-play.vercel.app,https://weiss-human-play-victor-wejergang-petersens-projects.vercel.app,https://weiss-human-play-git-main-victor-wejergang-petersens-projects.vercel.app}
       WEISS_HUMAN_PLAY_REPO_ROOT: /data/weiss-demo
+      WEISS_HUMAN_PLAY_TRANSCRIPT_ROOT: /data/transcripts
     volumes:
       - ./demo-bundle:/data/weiss-demo:ro
       - card_art_cache:/data/card_art
+      - transcripts:/data/transcripts
     expose:
       - "8765"
 
@@ -30,5 +32,6 @@ services:
 
 volumes:
   card_art_cache:
+  transcripts:
   caddy_config:
   caddy_data:

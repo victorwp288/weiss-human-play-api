@@ -24,6 +24,7 @@ expects:
 
 ```text
 demo-bundle/
+  configs/                       # empty marker dir; required so config_canonical.json resolves a repo root
   runs/
     selected_demo_run/
       config_canonical.json
@@ -32,9 +33,20 @@ demo-bundle/
       training/snapshots/.../weights.pt
 ```
 
+The `configs/` marker directory must exist at the bundle root: the stack-config
+loader walks up from `config_canonical.json` looking for a parent that contains a
+`configs/` directory and treats that as the repo root. An empty `configs/` is
+enough.
+
+The run's `spec_hash256.txt` must match the simulator baked into the image
+(`weiss-sim` `export_spec_bundle()` hash). A bundle exported against a different
+simulator spec will fail contract verification at session start.
+
 The image intentionally does not copy local `runs/` by default. Export a small,
 public-safe model bundle from the training repo and mount it into the container
-instead of publishing every experiment artifact.
+instead of publishing every experiment artifact. The bundle is mounted read-only;
+session transcripts are written to `WEISS_HUMAN_PLAY_TRANSCRIPT_ROOT` (a separate
+writable volume) instead of into the model bundle.
 
 ## OVH/VPS deployment
 

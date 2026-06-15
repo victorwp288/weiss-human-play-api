@@ -13,6 +13,7 @@ web/human-play/.vite
 
 /run_logs
 /runs
+/demo-bundle
 /vast_artifacts
 /diagnostics
 /thesis_figures_final
