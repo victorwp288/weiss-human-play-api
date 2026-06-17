@@ -16,6 +16,7 @@ from weiss_rl.human_play.session import (
     _enrich_card_labels,
     _normalize_policy_id,
     _normalize_view,
+    _public_effects_for_action,
 )
 from weiss_rl.human_play.transcript import DecisionRecord, HumanPlayTranscript
 from weiss_rl.human_play.web_server import SessionStore, _config_from_payload, make_handler
@@ -120,8 +121,60 @@ def test_transcript_writes_manifest_decisions_events_and_postgame(tmp_path: Path
     assert manifest["schema_version"] == "human_play_manifest_v1"
     assert decision["legal_action_ids"] == [7, 9]
     assert decision["action_label"] == "Play card"
+    assert decision["public_effects"] == []
     assert event["event"] == "started"
     assert "winner_seat" in transcript.postgame_path.read_text(encoding="utf-8")
+
+
+def test_public_effects_summarize_attack_damage_and_visible_zone_changes() -> None:
+    before = {
+        "players": [
+            {"seat": 0, "counts": {"deck": 40, "stock": 1, "clock": 0, "waiting_room": 0}},
+            {
+                "seat": 1,
+                "counts": {"deck": 38, "stock": 0, "clock": 1, "waiting_room": 1},
+                "zones": {"waiting_room": {"cards": [{"name": "Old"}]}},
+            },
+        ]
+    }
+    after = {
+        "players": [
+            {"seat": 0, "counts": {"deck": 39, "stock": 2, "clock": 0, "waiting_room": 0}},
+            {
+                "seat": 1,
+                "counts": {"deck": 37, "stock": 0, "clock": 2, "waiting_room": 2},
+                "zones": {"waiting_room": {"cards": [{"name": "Old"}, {"name": "Damage card"}]}},
+            },
+        ]
+    }
+
+    effects = _public_effects_for_action(
+        before_view=before,
+        after_view=after,
+        actor_seat=0,
+        action_item={"family": "attack", "is_attack": True},
+        label="Direct attack",
+    )
+
+    assert "Damage: seat 1 clock +1 -> 2" in effects
+    assert "Stock: seat 0 +1 -> 2" in effects
+    assert "Deck: seat 0 -1 (40 -> 39)" in effects
+    assert "Waiting room + seat 1: Damage card" in effects
+
+
+def test_public_effects_call_out_climax_actions() -> None:
+    before = {"players": [{"seat": 1, "counts": {"climax": 0, "waiting_room": 3}}]}
+    after = {"players": [{"seat": 1, "counts": {"climax": 1, "waiting_room": 3}}]}
+
+    effects = _public_effects_for_action(
+        before_view=before,
+        after_view=after,
+        actor_seat=1,
+        action_item={"family": "climax"},
+        label="Play climax from Feelings Void of Lies",
+    )
+
+    assert effects[0] == "Climax zone: seat 1 +1"
 
 
 def test_config_from_payload_maps_user_choices() -> None:

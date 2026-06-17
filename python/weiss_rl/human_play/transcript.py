@@ -23,6 +23,7 @@ class DecisionRecord:
     legal_fingerprint64: str | None
     elapsed_ms: float | None = None
     model_ranked_actions: tuple[dict[str, Any], ...] = ()
+    public_effects: tuple[str, ...] = ()
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class DecisionRecord:
             "legal_fingerprint64": self.legal_fingerprint64,
             "elapsed_ms": self.elapsed_ms,
             "model_ranked_actions": [dict(item) for item in self.model_ranked_actions],
+            "public_effects": [str(item) for item in self.public_effects],
         }
 
 

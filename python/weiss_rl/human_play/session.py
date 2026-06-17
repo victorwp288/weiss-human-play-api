@@ -358,6 +358,15 @@ class HumanPlaySession:
         label = _label_for_action(labelled_view, action)
         chosen_item = _action_item(labelled_view, action)
         ranked_payload = tuple(item.to_json_dict() for item in ranked_actions)
+        self.batch = self.env.step(np.asarray([int(action)], dtype=np.uint32))
+        after_view = self._safe_view_for_effects()
+        public_effects = _public_effects_for_action(
+            before_view=before_view,
+            after_view=after_view,
+            actor_seat=actor_seat,
+            action_item=chosen_item,
+            label=label,
+        )
         self.transcript.append_decision(
             DecisionRecord(
                 decision_index=self.decision_count,
@@ -372,6 +381,7 @@ class HumanPlaySession:
                 legal_fingerprint64=_optional_str(before_view.get("legal_fingerprint64")),
                 elapsed_ms=elapsed_ms,
                 model_ranked_actions=ranked_payload,
+                public_effects=public_effects,
             )
         )
         update_eval_action_counters(
@@ -402,12 +412,18 @@ class HumanPlaySession:
                 "family": None if chosen_item.get("family") is None else str(chosen_item.get("family")),
                 "phase": _optional_str(before_view.get("summary", {}).get("phase")),
                 "elapsed_ms": elapsed_ms,
+                "details": list(public_effects),
             }
         )
         self.public_history = self.public_history[-120:]
-        self.batch = self.env.step(np.asarray([int(action)], dtype=np.uint32))
         self.decision_count += 1
         self.action_history.append(int(action))
+
+    def _safe_view_for_effects(self) -> dict[str, Any] | None:
+        try:
+            return self.current_view()
+        except Exception:
+            return None
 
     def _build_env(self) -> DecisionBoundaryEnv:
         env_config = build_env_config_from_stack(
@@ -718,6 +734,165 @@ def _first_ref_card_name(action_item: dict[str, Any]) -> str | None:
             if name:
                 return name
     return None
+
+
+_PUBLIC_EFFECT_ZONES = ("level", "clock", "stock", "hand", "deck", "waiting_room", "climax", "memory")
+
+
+def _public_effects_for_action(
+    *,
+    before_view: dict[str, Any],
+    after_view: dict[str, Any] | None,
+    actor_seat: int,
+    action_item: dict[str, Any],
+    label: str,
+) -> tuple[str, ...]:
+    if after_view is None:
+        return ()
+    effects: list[str] = []
+    family = str(action_item.get("family") or "").lower()
+    label_lower = label.lower()
+    is_attack = bool(action_item.get("is_attack")) or "attack" in family or "attack" in label_lower
+    is_climax = "climax" in family or "climax" in label_lower
+
+    before_players = _players_by_seat(before_view)
+    after_players = _players_by_seat(after_view)
+    seats = sorted(set(before_players) | set(after_players))
+    deltas: dict[int, dict[str, tuple[int, int, int]]] = {}
+    for seat in seats:
+        before_counts = _public_counts(before_players.get(seat))
+        after_counts = _public_counts(after_players.get(seat))
+        seat_deltas: dict[str, tuple[int, int, int]] = {}
+        for zone in _PUBLIC_EFFECT_ZONES:
+            before_count = before_counts.get(zone, 0)
+            after_count = after_counts.get(zone, 0)
+            delta = after_count - before_count
+            if delta:
+                seat_deltas[zone] = (before_count, after_count, delta)
+        if seat_deltas:
+            deltas[seat] = seat_deltas
+
+    if is_climax:
+        actor_climax = deltas.get(int(actor_seat), {}).get("climax")
+        actor_waiting = deltas.get(int(actor_seat), {}).get("waiting_room")
+        if actor_climax and actor_climax[2] > 0:
+            effects.append(f"Climax zone: seat {actor_seat} +{actor_climax[2]}")
+        elif actor_waiting and actor_waiting[2] > 0:
+            effects.append(f"Climax resolved to waiting room for seat {actor_seat}")
+        else:
+            effects.append("Climax action recorded; no public climax-zone delta exposed")
+
+    if is_attack:
+        defender_clock = [
+            (seat, item)
+            for seat, zone_deltas in deltas.items()
+            if seat != int(actor_seat)
+            for zone, item in zone_deltas.items()
+            if zone == "clock"
+        ]
+        if defender_clock:
+            for seat, (_before, after, delta) in defender_clock:
+                effects.append(f"Damage: seat {seat} clock {delta:+d} -> {after}")
+        else:
+            effects.append("Damage: no public clock gain after this attack")
+        actor_stock = deltas.get(int(actor_seat), {}).get("stock")
+        if actor_stock:
+            effects.append(f"Stock: seat {actor_seat} {actor_stock[2]:+d} -> {actor_stock[1]}")
+
+    for seat, zone_deltas in deltas.items():
+        for zone in _PUBLIC_EFFECT_ZONES:
+            if zone in {"clock", "stock", "climax"} and (is_attack or is_climax):
+                continue
+            item = zone_deltas.get(zone)
+            if item is None:
+                continue
+            before, after, delta = item
+            effects.append(f"{_zone_label(zone)}: seat {seat} {delta:+d} ({before} -> {after})")
+
+    additions = _public_zone_additions(before_view, after_view, zone="waiting_room")
+    for seat, names in additions:
+        if names:
+            effects.append(f"Waiting room + seat {seat}: {', '.join(names[:3])}")
+
+    return tuple(dict.fromkeys(effects[:8]))
+
+
+def _players_by_seat(view: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    players = view.get("players")
+    if not isinstance(players, list):
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    for player in players:
+        if not isinstance(player, dict):
+            continue
+        try:
+            seat = int(player.get("seat"))
+        except (TypeError, ValueError):
+            continue
+        out[seat] = player
+    return out
+
+
+def _public_counts(player: dict[str, Any] | None) -> dict[str, int]:
+    if not isinstance(player, dict):
+        return {}
+    raw_counts = player.get("counts")
+    counts = raw_counts if isinstance(raw_counts, dict) else {}
+    out: dict[str, int] = {}
+    zones = player.get("zones") if isinstance(player.get("zones"), dict) else {}
+    for zone in _PUBLIC_EFFECT_ZONES:
+        count = _optional_int(counts.get(f"{zone}_count", counts.get(zone)))
+        if count is None and isinstance(zones, dict):
+            zone_payload = zones.get(zone)
+            if isinstance(zone_payload, dict):
+                count = _optional_int(zone_payload.get("count"))
+                cards = zone_payload.get("cards")
+                if count is None and isinstance(cards, list):
+                    count = len(cards)
+            elif isinstance(zone_payload, list):
+                count = len(zone_payload)
+        out[zone] = 0 if count is None else int(count)
+    return out
+
+
+def _public_zone_additions(
+    before_view: dict[str, Any], after_view: dict[str, Any], *, zone: str
+) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    before_players = _players_by_seat(before_view)
+    after_players = _players_by_seat(after_view)
+    rows: list[tuple[int, tuple[str, ...]]] = []
+    for seat in sorted(set(before_players) | set(after_players)):
+        before_names = _zone_card_names(before_players.get(seat), zone)
+        after_names = _zone_card_names(after_players.get(seat), zone)
+        if len(after_names) <= len(before_names):
+            continue
+        rows.append((seat, tuple(after_names[len(before_names) :])))
+    return tuple(rows)
+
+
+def _zone_card_names(player: dict[str, Any] | None, zone: str) -> tuple[str, ...]:
+    if not isinstance(player, dict):
+        return ()
+    zones = player.get("zones")
+    if not isinstance(zones, dict):
+        return ()
+    payload = zones.get(zone)
+    cards = payload if isinstance(payload, list) else payload.get("cards") if isinstance(payload, dict) else None
+    if not isinstance(cards, list):
+        return ()
+    names: list[str] = []
+    for item in cards:
+        if not isinstance(item, dict):
+            continue
+        card = item.get("card") if isinstance(item.get("card"), dict) else item
+        name = str(card.get("name") or card.get("label") or card.get("card_no") or "").strip()
+        if name and not bool(card.get("hidden") or card.get("redacted")):
+            names.append(name)
+    return tuple(names)
+
+
+def _zone_label(zone: str) -> str:
+    return zone.replace("_", " ").title()
 
 
 def _load_json(path: Path) -> dict[str, Any]:
