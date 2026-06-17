@@ -63,7 +63,7 @@ class HumanPlayConfig:
     model_deck: str = MAIN_DECK_ID
     mode: str = "study"
     spectate: bool = False
-    model_sampling_algorithm: str = "model_argmax_pinned_v1"
+    model_sampling_algorithm: str = "pinned_cdf_pcg_v1"
     artifact_root: Path | None = None
     top_k: int = 5
     search_rollout_opponent_policy_id: str = RANDOM_LEGAL_POLICY_ID

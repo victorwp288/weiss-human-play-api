@@ -139,12 +139,13 @@ def test_config_from_payload_maps_user_choices() -> None:
         }
     )
 
-    assert config.run_dir == Path("runs/example")
+    assert config.run_dir == Path("runs/example").resolve()
     assert config.policy_id == "policy_000003"
     assert config.human_seat == 1
     assert config.human_deck == "preset:aggro_deck_5hy_nino_v1"
     assert config.model_deck == "preset:control_deck_jj_s66_v1"
     assert config.artifact_root == Path("runs/example/human_play")
+    assert config.model_sampling_algorithm == "pinned_cdf_pcg_v1"
     assert config.top_k == 7
     assert config.search_rollout_opponent_policy_id == "B2 HeuristicPublic"
     assert config.god_search.enabled is True
@@ -239,7 +240,7 @@ class _FakeStore(SessionStore):
         self.session = _FakeSession()
 
     def create(self, config: Any) -> _FakeSession:
-        assert config.run_dir == Path("runs/example")
+        assert config.run_dir == Path("runs/example").resolve()
         return self.session
 
     def get(self, session_id: str) -> _FakeSession:

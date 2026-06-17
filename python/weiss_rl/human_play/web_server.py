@@ -21,7 +21,6 @@ from weiss_rl.human_play.catalog import default_repo_root, list_candidate_runs, 
 from weiss_rl.human_play.decks import list_deck_presets
 from weiss_rl.human_play.session import HumanPlayConfig, HumanPlaySession, HumanPlaySessionError
 
-
 # ---------------------------------------------------------------- card art
 # Card scans resolve through the simulator repo's scraped card DB
 # (card_no -> image_url), falling back to scraping the public ws-tcg.com
@@ -414,7 +413,7 @@ def _config_from_payload(payload: dict[str, Any]) -> HumanPlayConfig:
         model_deck=str(payload.get("model_deck", "preset:main_deck_5hy_yotsuba_v1")),
         mode=str(payload.get("mode", "study")),
         spectate=bool(payload.get("spectate", False)),
-        model_sampling_algorithm=str(payload.get("model_sampling_algorithm", "model_argmax_pinned_v1")),
+        model_sampling_algorithm=str(payload.get("model_sampling_algorithm", "pinned_cdf_pcg_v1")),
         artifact_root=_optional_path(payload.get("artifact_root")) or _default_transcript_root(),
         top_k=int(payload.get("top_k", 5)),
         search_rollout_opponent_policy_id=str(payload.get("search_rollout_opponent_policy_id", "B0 RandomLegal")),
