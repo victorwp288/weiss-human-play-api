@@ -182,10 +182,12 @@ def test_config_from_payload_maps_user_choices() -> None:
         {
             "run_dir": "runs/example",
             "policy_id": "policy_000003",
+            "spectate_opponent_policy_id": "B3 HeuristicPublicAggro",
             "human_seat": 1,
             "human_deck": "preset:aggro_deck_5hy_nino_v1",
             "model_deck": "preset:control_deck_jj_s66_v1",
             "artifact_root": "runs/example/human_play",
+            "model_sampling_algorithm": "model_argmax_pinned_v1",
             "top_k": 7,
             "search_rollout_opponent_policy_id": "B2 HeuristicPublic",
             "god_search": {"mode": "same_world_prefix_rollout", "top_k": 3},
@@ -194,11 +196,12 @@ def test_config_from_payload_maps_user_choices() -> None:
 
     assert config.run_dir == Path("runs/example").resolve()
     assert config.policy_id == "policy_000003"
+    assert config.spectate_opponent_policy_id == "B3 HeuristicPublicAggro"
     assert config.human_seat == 1
     assert config.human_deck == "preset:aggro_deck_5hy_nino_v1"
     assert config.model_deck == "preset:control_deck_jj_s66_v1"
     assert config.artifact_root == Path("runs/example/human_play")
-    assert config.model_sampling_algorithm == "pinned_cdf_pcg_v1"
+    assert config.model_sampling_algorithm == "model_argmax_pinned_v1"
     assert config.top_k == 7
     assert config.search_rollout_opponent_policy_id == "B2 HeuristicPublic"
     assert config.god_search.enabled is True

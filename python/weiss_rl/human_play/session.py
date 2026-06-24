@@ -54,6 +54,7 @@ class HumanPlaySessionError(RuntimeError):
 class HumanPlayConfig:
     run_dir: Path
     policy_id: str = "main_league_selected"
+    spectate_opponent_policy_id: str | None = None
     stack_config: Path | None = None
     snapshot_registry_json: Path | None = None
     b1_baseline_run_dir: Path | None = None
@@ -111,31 +112,25 @@ class HumanPlaySession:
         self.observation_dim = int(self.spec_bundle["observation"]["obs_len"])
         self.action_dim = int(self.spec_bundle["action"]["action_space_size"])
         self.pass_action_id = int(self.spec_bundle["action"]["pass_action_id"])
+        self.spectate = bool(config.spectate)
         self.policy_id = _normalize_policy_id(self.run_dir, config.policy_id)
+        self.spectate_opponent_policy_id = _normalize_spectate_opponent_policy_id(
+            self.run_dir,
+            primary_policy_id=self.policy_id,
+            requested_policy_id=config.spectate_opponent_policy_id,
+        )
         self.search_rollout_opponent_policy_id = str(config.search_rollout_opponent_policy_id).strip()
         self.model_seat = 1 - int(config.human_seat)
-        self.seat0_policy_id = "human" if config.human_seat == 0 else self.policy_id
-        self.seat1_policy_id = self.policy_id if config.human_seat == 0 else "human"
+        self.seat_policy_id_by_seat = self._seat_policy_ids()
+        self.seat0_policy_id = self.seat_policy_id_by_seat[0]
+        self.seat1_policy_id = self.seat_policy_id_by_seat[1]
         self.seat0_deck = _deck_for_seat(config=config, seat=0)
         self.seat1_deck = _deck_for_seat(config=config, seat=1)
         self.env = self._build_env()
         self.batch = self.env.reset(seed=int(config.seed))
         self.rng = Pcg32XshRrV1(int(config.seed) ^ 0xC0DEC0DE)
         self.runner = self._build_eval_runner()
-        self.spectate = bool(config.spectate)
-        # Hidden state per seat: normally only the model seat acts; in spectate
-        # mode the policy plays both seats with independent recurrent state.
-        self.seat_hidden: dict[int, torch.Tensor | None] = {
-            int(self.model_seat): self.runner._initial_hidden(  # noqa: SLF001 - shared eval helper until public API exists.
-                self.policy_id,
-                opponent_policy_id=self.search_rollout_opponent_policy_id,
-            )
-        }
-        if self.spectate:
-            self.seat_hidden[int(self.config.human_seat)] = self.runner._initial_hidden(  # noqa: SLF001
-                self.policy_id,
-                opponent_policy_id=self.search_rollout_opponent_policy_id,
-            )
+        self.seat_hidden = self._initial_seat_hidden_by_seat()
         self.action_sequence_state = make_action_sequence_state(1)
         self.action_counters = ActionSummaryCounters()
         self.action_history: list[int] = []
@@ -166,6 +161,9 @@ class HumanPlaySession:
             "human_seat": int(self.config.human_seat),
             "model_seat": int(self.model_seat),
             "policy_id": self.policy_id,
+            "spectate_opponent_policy_id": self.spectate_opponent_policy_id if self.spectate else None,
+            "seat0_policy_id": self.seat0_policy_id,
+            "seat1_policy_id": self.seat1_policy_id,
             "human_turn": not self.spectate and self._current_actor() == int(self.config.human_seat) and not terminal,
             "spectate": self.spectate,
             "terminal": terminal,
@@ -188,6 +186,39 @@ class HumanPlaySession:
 
     def current_view(self) -> dict[str, Any]:
         return self._view_for_seat(int(self.config.human_seat))
+
+    def _seat_policy_ids(self) -> dict[int, str]:
+        human_seat = int(self.config.human_seat)
+        model_seat = int(self.model_seat)
+        if self.spectate:
+            return {
+                model_seat: self.policy_id,
+                human_seat: self.spectate_opponent_policy_id,
+            }
+        return {
+            model_seat: self.policy_id,
+            human_seat: "human",
+        }
+
+    def _initial_seat_hidden_by_seat(self) -> dict[int, torch.Tensor | None]:
+        hidden_by_seat: dict[int, torch.Tensor | None] = {}
+        for seat, policy_id in self.seat_policy_id_by_seat.items():
+            if policy_id == "human":
+                continue
+            hidden_by_seat[int(seat)] = self.runner._initial_hidden(  # noqa: SLF001 - shared eval helper until public API exists.
+                policy_id,
+                opponent_policy_id=self._opponent_policy_id_for_seat(int(seat)),
+            )
+        return hidden_by_seat
+
+    def _policy_id_for_seat(self, seat: int) -> str:
+        return self.seat_policy_id_by_seat[int(seat)]
+
+    def _opponent_policy_id_for_seat(self, seat: int) -> str:
+        policy_id = self.seat_policy_id_by_seat[1 - int(seat)]
+        if policy_id == "human":
+            return self.search_rollout_opponent_policy_id
+        return policy_id
 
     def _view_for_seat(self, seat: int) -> dict[str, Any]:
         raw_view = self.weiss_sim.human_decision_view(
@@ -248,9 +279,16 @@ class HumanPlaySession:
         # other perspectives redact them to "Action N".
         actor_view = self._view_for_seat(int(seat))
         legal_ids = self._legal_ids_for_row()
+        current_policy_id = self._policy_id_for_seat(int(seat))
+        opponent_policy_id = self._opponent_policy_id_for_seat(int(seat))
         started = time.perf_counter()
         action, next_hidden, ranked = self._select_model_action(
-            legal_ids=legal_ids, actor_view=actor_view, seat=int(seat), use_search=use_search
+            legal_ids=legal_ids,
+            actor_view=actor_view,
+            seat=int(seat),
+            current_policy_id=current_policy_id,
+            opponent_policy_id=opponent_policy_id,
+            use_search=use_search,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self.seat_hidden[int(seat)] = next_hidden
@@ -261,19 +299,33 @@ class HumanPlaySession:
             label_view=actor_view,
             ranked_actions=ranked,
             elapsed_ms=elapsed_ms,
+            actor_policy_id=current_policy_id,
         )
 
     def _select_model_action(
-        self, *, legal_ids: np.ndarray, actor_view: dict[str, Any], seat: int, use_search: bool
+        self,
+        *,
+        legal_ids: np.ndarray,
+        actor_view: dict[str, Any],
+        seat: int,
+        current_policy_id: str,
+        opponent_policy_id: str,
+        use_search: bool,
     ) -> tuple[int, torch.Tensor | None, tuple[ActionOption, ...]]:
         seat_hidden = self.seat_hidden.get(int(seat))
-        ranked = self._rank_model_actions(legal_ids=legal_ids, actor_view=actor_view, seat=int(seat))
+        ranked = self._rank_model_actions(
+            legal_ids=legal_ids,
+            actor_view=actor_view,
+            seat=int(seat),
+            current_policy_id=current_policy_id,
+            opponent_policy_id=opponent_policy_id,
+        )
         if use_search:
             action, next_hidden = self.runner._select_action(  # noqa: SLF001
                 batch=self.batch,
                 current_seat=int(seat),
-                current_policy_id=self.policy_id,
-                opponent_policy_id=self.search_rollout_opponent_policy_id,
+                current_policy_id=current_policy_id,
+                opponent_policy_id=opponent_policy_id,
                 seat_hidden=seat_hidden,
                 rng=self.rng,
                 legal_ids=legal_ids,
@@ -290,8 +342,8 @@ class HumanPlaySession:
             action, next_hidden = self.runner._select_action_without_god_search(  # noqa: SLF001
                 batch=self.batch,
                 current_seat=int(seat),
-                current_policy_id=self.policy_id,
-                opponent_policy_id=self.search_rollout_opponent_policy_id,
+                current_policy_id=current_policy_id,
+                opponent_policy_id=opponent_policy_id,
                 seat_hidden=seat_hidden,
                 rng=self.rng,
                 legal_ids=legal_ids,
@@ -301,16 +353,22 @@ class HumanPlaySession:
         return int(action), next_hidden, ranked
 
     def _rank_model_actions(
-        self, *, legal_ids: np.ndarray, actor_view: dict[str, Any], seat: int
+        self,
+        *,
+        legal_ids: np.ndarray,
+        actor_view: dict[str, Any],
+        seat: int,
+        current_policy_id: str,
+        opponent_policy_id: str,
     ) -> tuple[ActionOption, ...]:
-        policy = self.runner.policies[self.policy_id]
+        policy = self.runner.policies[current_policy_id]
         seat_hidden = self.seat_hidden.get(int(seat))
         if policy.model is None or seat_hidden is None:
             return ()
         logits, _next_hidden, legal_ids_for_model = self.runner._model_logits_for_eval(  # noqa: SLF001
             policy=policy,
-            current_policy_id=self.policy_id,
-            opponent_policy_id=self.search_rollout_opponent_policy_id,
+            current_policy_id=current_policy_id,
+            opponent_policy_id=opponent_policy_id,
             batch=self.batch,
             current_seat=int(seat),
             seat_hidden=seat_hidden,
@@ -350,6 +408,7 @@ class HumanPlaySession:
         ranked_actions: tuple[ActionOption, ...],
         elapsed_ms: float | None,
         label_view: dict[str, Any] | None = None,
+        actor_policy_id: str | None = None,
     ) -> None:
         legal_ids = tuple(int(item) for item in before_view["legal_action_ids"])
         actor_seat = int(before_view.get("summary", {}).get("actor_seat", self._current_actor()))
@@ -398,6 +457,7 @@ class HumanPlaySession:
                     "actor_seat": actor_seat,
                     "action_id": int(action),
                     "action_label": label,
+                    "policy_id": actor_policy_id,
                     "elapsed_ms": elapsed_ms,
                     "ranked_actions": list(ranked_payload),
                 }
@@ -408,6 +468,7 @@ class HumanPlaySession:
                 "decision_index": int(self.decision_count),
                 "actor_seat": actor_seat,
                 "actor_kind": actor_kind,
+                "policy_id": actor_policy_id,
                 "label": label,
                 "family": None if chosen_item.get("family") is None else str(chosen_item.get("family")),
                 "phase": _optional_str(before_view.get("summary", {}).get("phase")),
@@ -445,7 +506,11 @@ class HumanPlaySession:
         )
 
     def _build_eval_runner(self) -> SimulatorEvalRunner:
-        policy_ids = [self.policy_id]
+        policy_ids = [
+            policy_id
+            for policy_id in dict.fromkeys(self.seat_policy_id_by_seat.values())
+            if policy_id != "human"
+        ]
         if self.config.god_search.enabled and self.search_rollout_opponent_policy_id not in policy_ids:
             policy_ids.append(self.search_rollout_opponent_policy_id)
         policies = resolve_eval_policies(
@@ -482,6 +547,9 @@ class HumanPlaySession:
                 "mode": self.config.mode,
                 "run_dir": self.run_dir.as_posix(),
                 "policy_id": self.policy_id,
+                "spectate_opponent_policy_id": self.spectate_opponent_policy_id if self.spectate else None,
+                "seat0_policy_id": self.seat0_policy_id,
+                "seat1_policy_id": self.seat1_policy_id,
                 "human_seat": int(self.config.human_seat),
                 "model_seat": int(self.model_seat),
                 "seed": int(self.config.seed),
@@ -502,15 +570,18 @@ class HumanPlaySession:
 
     def _scheduled_game(self) -> ScheduledGame:
         human_proxy = self.search_rollout_opponent_policy_id
+        seat0_policy_id = self.seat0_policy_id if self.seat0_policy_id != "human" else human_proxy
+        seat1_policy_id = self.seat1_policy_id if self.seat1_policy_id != "human" else human_proxy
+        opponent_policy_id = seat1_policy_id if self.model_seat == 0 else seat0_policy_id
         return ScheduledGame(
             pair_index=0,
             swap_index=0,
             episode_index=0,
             episode_seed=int(self.config.seed),
             focal_policy_id=self.policy_id,
-            opponent_policy_id=human_proxy,
-            seat0_policy_id=self.policy_id if self.model_seat == 0 else human_proxy,
-            seat1_policy_id=human_proxy if self.model_seat == 0 else self.policy_id,
+            opponent_policy_id=opponent_policy_id,
+            seat0_policy_id=seat0_policy_id,
+            seat1_policy_id=seat1_policy_id,
             focal_seat=int(self.model_seat),
             seat0_deck=self.seat0_deck,
             seat1_deck=self.seat1_deck,
@@ -668,6 +739,15 @@ def _normalize_policy_id(run_dir: Path, requested_policy_id: str) -> str:
         if registry.snapshots:
             return str(registry.snapshots[-1].policy_id)
     raise HumanPlaySessionError("could not infer a default policy id; pass policy_id explicitly")
+
+
+def _normalize_spectate_opponent_policy_id(
+    run_dir: Path, *, primary_policy_id: str, requested_policy_id: str | None
+) -> str:
+    policy_id = "" if requested_policy_id is None else str(requested_policy_id).strip()
+    if policy_id in {"", "same", "same_as_policy", "self_play", "mirror"}:
+        return str(primary_policy_id)
+    return _normalize_policy_id(run_dir, policy_id)
 
 
 def _selected_main_snapshot_policy_id(registry: SnapshotRegistry) -> str | None:

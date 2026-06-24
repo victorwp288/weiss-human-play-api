@@ -404,6 +404,7 @@ def _config_from_payload(payload: dict[str, Any]) -> HumanPlayConfig:
     return HumanPlayConfig(
         run_dir=_resolve_allowed_run_dir(str(run_dir)),
         policy_id=str(payload.get("policy_id", "main_league_selected")),
+        spectate_opponent_policy_id=_optional_str(payload.get("spectate_opponent_policy_id")),
         stack_config=_optional_path(payload.get("stack_config")),
         snapshot_registry_json=_optional_path(payload.get("snapshot_registry_json")),
         b1_baseline_run_dir=_optional_path(payload.get("b1_baseline_run_dir")),
@@ -448,6 +449,11 @@ def _optional_path(value: object) -> Path | None:
 
 def _optional_mapping(value: object) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
+
+
+def _optional_str(value: object) -> str | None:
+    text = "" if value is None else str(value).strip()
+    return text or None
 
 
 def _first_query_value(query: dict[str, list[str]], name: str) -> str | None:
